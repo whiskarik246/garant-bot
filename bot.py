@@ -61,9 +61,10 @@ def init_db() -> None:
                     value TEXT
                 )
             """)
+            # Добавлена таблица для Чёрного списка
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS blacklist (
-                    user_id INTEGER PRIMARY KEY,
+                    user_id  INTEGER PRIMARY KEY,
                     username TEXT
                 )
             """)
@@ -148,7 +149,7 @@ def db_update_ticket_status(ticket_id: int, status: str) -> None:
     except Exception as e:
         logger.error(f"db_update_ticket_status({ticket_id}, {status}): {e}")
 
-# Функции для Чёрного Списка
+# Функции работы с ЧС
 def db_add_to_blacklist(user_id: int, username: str | None) -> None:
     try:
         with get_connection() as conn:
@@ -158,7 +159,7 @@ def db_add_to_blacklist(user_id: int, username: str | None) -> None:
             )
             conn.commit()
     except Exception as e:
-        logger.error(f"db_add_to_blacklist({user_id}): {e}")
+        logger.error(f"db_add_to_blacklist: {e}")
 
 def db_remove_from_blacklist(user_id: int) -> None:
     try:
@@ -166,17 +167,15 @@ def db_remove_from_blacklist(user_id: int) -> None:
             conn.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
             conn.commit()
     except Exception as e:
-        logger.error(f"db_remove_from_blacklist({user_id}): {e}")
+        logger.error(f"db_remove_from_blacklist: {e}")
 
 def db_is_blacklisted(user_id: int) -> bool:
     try:
         with get_connection() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM blacklist WHERE user_id = ?", (user_id,)
-            ).fetchone()
-            return row is not None
+            row = conn.execute("SELECT 1 FROM blacklist WHERE user_id = ?", (user_id,)).fetchone()
+            return bool(row)
     except Exception as e:
-        logger.error(f"db_is_blacklisted({user_id}): {e}")
+        logger.error(f"db_is_blacklisted: {e}")
         return False
 
 def db_get_blacklist() -> list:
@@ -225,7 +224,7 @@ def ticket_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="✍️ Ответить", callback_data=f"reply_{ticket_id}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{ticket_id}"),
-            InlineKeyboardButton(text="🚫 ЧС", callback_data=f"ban_{ticket_id}")
+            InlineKeyboardButton(text="🚫 Бан", callback_data=f"ban_{ticket_id}")
         ]
     ])
 
@@ -260,7 +259,7 @@ bot = Bot(token=BOT_TOKEN, default_properties=DefaultBotProperties(parse_mode=Pa
 dp  = Dispatcher(storage=MemoryStorage())
 
 # ──────────────────────────────────────────────
-#  ОБРАБОТЧИКИ
+#  ОБРАБОТЧИКИ (ПОЛЬЗОВАТЕЛИ)
 # ──────────────────────────────────────────────
 async def send_start_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -268,6 +267,7 @@ async def send_start_menu(message: Message, state: FSMContext) -> None:
     username = user.username if user else None
     user_id  = user.id if user else None
 
+    # Проверка на ЧС при вызове меню
     if user_id and db_is_blacklisted(user_id):
         await message.answer("🚫 <b>Вы заблокированы в этом боте.</b>", parse_mode="HTML")
         return
@@ -310,6 +310,7 @@ async def btn_menu_pressed(message: Message, state: FSMContext) -> None:
 async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
     user = callback.from_user
     
+    # Проверка на ЧС при нажатии кнопки
     if db_is_blacklisted(user.id):
         await callback.answer("🚫 Вы заблокированы в боте.", show_alert=True)
         return
@@ -332,9 +333,9 @@ async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
 
 @dp.message(UserStates.waiting_for_message)
 async def user_message_received(message: Message, state: FSMContext) -> None:
-    user     = message.from_user
-    user_id  = user.id
-
+    user_id = message.from_user.id
+    
+    # Защита: проверка на ЧС прямо перед сохранением сообщения
     if db_is_blacklisted(user_id):
         await state.clear()
         await message.answer("🚫 <b>Вы заблокированы в этом боте.</b>", parse_mode="HTML")
@@ -346,8 +347,9 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
         return
 
     await state.clear()
+    user = message.from_user
     username = user.username or "нет username"
-    text     = message.text or ""
+    text = message.text or ""
 
     if not text.strip():
         await message.answer("❗ Пожалуйста, отправьте текстовое сообщение.")
@@ -383,6 +385,9 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
         except Exception as e:
             logger.error(f"user_message_received notify admin: {e}")
 
+# ──────────────────────────────────────────────
+#  ОБРАБОТЧИКИ (АДМИНИСТРАТОР)
+# ──────────────────────────────────────────────
 @dp.callback_query(F.data == "admin_tickets")
 async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.username):
@@ -553,6 +558,7 @@ async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     )
     await callback.answer("Отклонено.")
 
+# --- НОВЫЙ БЛОК: БАН ПОЛЬЗОВАТЕЛЯ ИЗ ТИКЕТА ---
 @dp.callback_query(F.data.startswith("ban_"))
 async def cb_ban_user(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.username):
@@ -573,14 +579,5 @@ async def cb_ban_user(callback: CallbackQuery) -> None:
     user_id = ticket["user_id"]
     username = ticket["username"]
 
-    db_add_to_blacklist(user_id, username)
-    db_update_ticket_status(ticket_id, "blocked")
-
-    ban_msg = "🚫 <b>Вы были заблокированы администратором и больше не можете использовать бота.</b>"
-    try:
-        await bot.send_message(user_id, ban_msg, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"cb_ban_user send notify to {user_id}: {e}")
-
-    try:
-  
+    # Добавляем в ЧС и меняем статус тикета
+    db_add_to_bla
