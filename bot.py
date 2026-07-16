@@ -248,7 +248,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         greeting += "\n\n<i>🔐 Вы вошли как администратор.</i>"
 
     try:
-        await message.answer(greeting, reply_markup=main_keyboard(is_admin=admin))
+        await message.answer(greeting, reply_markup=main_keyboard(is_admin=admin), parse_mode="HTML")
     except Exception as e:
         logger.error(f"cmd_start answer: {e}")
 
@@ -265,7 +265,8 @@ async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
     try:
         await callback.message.answer(
             "✏️ <b>Напишите ваше сообщение гаранту:</b>\n"
-            "<i>Опишите суть вопроса или сделки как можно подробнее.</i>"
+            "<i>Опишите суть вопроса или сделки как можно подробнее.</i>",
+            parse_mode="HTML"
         )
         await callback.answer()
     except Exception as e:
