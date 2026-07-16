@@ -16,9 +16,9 @@ from aiogram.types import (
 )
 
 # ──────────────────────────────────────────────
-#  КОНФИГУРАЦИЯ
+#  КОНФИГУРАЦИЯ (С НОВЫМ ТОКЕНОМ)
 # ──────────────────────────────────────────────
-BOT_TOKEN      = "8253893194:AAGkVF4oVU5v9kaCdFQsVWgdwrQ5NAeXLNc"
+BOT_TOKEN      = "8984175960:AAGfRXKzHJ_3b79ONz5BXoag0fbc9wSY0ME"
 ADMIN_USERNAME = "RAZY_YZAR"
 SHOP_URL       = "https://t.me/wyxner"
 DB_PATH        = "garant.db"
@@ -214,7 +214,6 @@ async def save_admin_id_if_needed(user_id: int, username: str | None) -> None:
 # ──────────────────────────────────────────────
 #  ИНИЦИАЛИЗАЦИЯ БОТА
 # ──────────────────────────────────────────────
-# Исправлена инициализация parse_mode для aiogram 3.x
 bot = Bot(token=BOT_TOKEN, default_properties=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp  = Dispatcher(storage=MemoryStorage())
 
@@ -293,7 +292,8 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
     try:
         await message.answer(
             "✅ <b>Сообщение отправлено, ожидайте ответа.</b>\n"
-            "<i>Гарант свяжется с вами в ближайшее время.</i>"
+            "<i>Гарант свяжется с вами в ближайшее время.</i>",
+            parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"user_message_received answer user: {e}")
@@ -307,7 +307,7 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
             f"📝 Текст:\n<blockquote>{text}</blockquote>"
         )
         try:
-            await bot.send_message(admin_id, notice)
+            await bot.send_message(admin_id, notice, parse_mode="HTML")
         except Exception as e:
             logger.error(f"user_message_received notify admin: {e}")
 
@@ -323,13 +323,14 @@ async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
     tickets = db_get_open_tickets(10)
 
     if not tickets:
-        await callback.message.answer("📭 <b>Открытых запросов нет.</b>")
+        await callback.message.answer("📭 <b>Открытых запросов нет.</b>", parse_mode="HTML")
         await callback.answer()
         return
 
     await callback.message.answer(
         f"📋 <b>Открытые запросы ({len(tickets)} шт.):</b>\n"
-        f"<i>Показаны последние 10</i>"
+        f"<i>Показаны последние 10</i>",
+        parse_mode="HTML"
     )
 
     for t in tickets:
@@ -345,7 +346,7 @@ async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
             f"📝 <blockquote>{preview}</blockquote>"
         )
         try:
-            await callback.message.answer(card, reply_markup=ticket_keyboard(tid))
+            await callback.message.answer(card, reply_markup=ticket_keyboard(tid), parse_mode="HTML")
         except Exception as e:
             logger.error(f"cb_admin_tickets send card: {e}")
 
@@ -371,13 +372,13 @@ async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.set_state(AdminStates.waiting_for_reply_text)
-    # Запоминаем ID тикета и ID сообщения, чтобы потом отредактировать в нем кнопки
     await state.update_data(ticket_id=ticket_id, message_id=callback.message.message_id)
 
     try:
         await callback.message.answer(
             f"✏️ <b>Введите ответ на тикет #{ticket_id}:</b>\n"
-            f"<i>Ваш ответ будет отправлен пользователю @{ticket.get('username', '?')} в ЛС.</i>"
+            f"<i>Ваш ответ будет отправлен пользователю @{ticket.get('username', '?')} в ЛС.</i>",
+            parse_mode="HTML"
         )
         await callback.answer()
     except Exception as e:
@@ -414,14 +415,13 @@ async def admin_reply_received(message: Message, state: FSMContext) -> None:
 
     sent = False
     try:
-        await bot.send_message(user_id, reply_msg)
+        await bot.send_message(user_id, reply_msg, parse_mode="HTML")
         sent = True
     except Exception as e:
         logger.error(f"admin_reply_received send to user {user_id}: {e}")
 
     db_update_ticket_status(ticket_id, "closed")
 
-    # Убираем инлайн-кнопки у сообщения тикета, так как на него ответили
     if msg_id:
         try:
             await bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=msg_id, reply_markup=None)
@@ -431,12 +431,14 @@ async def admin_reply_received(message: Message, state: FSMContext) -> None:
     if sent:
         await message.answer(
             f"✅ <b>Ответ отправлен!</b>\n"
-            f"🎫 Тикет <b>#{ticket_id}</b> закрыт."
+            f"🎫 Тикет <b>#{ticket_id}</b> закрыт.",
+            parse_mode="HTML"
         )
     else:
         await message.answer(
             f"⚠️ <b>Не удалось доставить сообщение пользователю</b> (возможно, заблокировал бота).\n"
-            f"🎫 Тикет <b>#{ticket_id}</b> закрыт."
+            f"🎫 Тикет <b>#{ticket_id}</b> закрыт.",
+            parse_mode="HTML"
         )
 
 
@@ -466,7 +468,7 @@ async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
         f"<i>Если вы считаете, что это ошибка — напишите снова через /start</i>"
     )
     try:
-        await bot.send_message(user_id, reject_msg)
+        await bot.send_message(user_id, reject_msg, parse_mode="HTML")
     except Exception as e:
         logger.error(f"cb_reject_ticket send to user {user_id}: {e}")
 
@@ -477,7 +479,8 @@ async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
 
     await callback.message.answer(
         f"🗑️ <b>Тикет #{ticket_id} отклонён.</b>\n"
-        f"Пользователь @{ticket.get('username', '?')} уведомлён."
+        f"Пользователь @{ticket.get('username', '?')} уведомлён.",
+        parse_mode="HTML"
     )
     await callback.answer("Отклонено.")
 
@@ -497,4 +500,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+                                      
