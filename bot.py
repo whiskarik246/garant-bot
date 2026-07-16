@@ -16,7 +16,7 @@ from aiogram.types import (
 )
 
 # ──────────────────────────────────────────────
-#  КОНФИГУРАЦИЯ (С НОВЫМ ТОКЕНОМ)
+#  КОНФИГУРАЦИЯ (С САМЫМ НОВЫМ ТОКЕНОМ)
 # ──────────────────────────────────────────────
 BOT_TOKEN      = "8984175960:AAGfRXKzHJ_3b79ONz5BXoag0fbc9wSY0ME"
 ADMIN_USERNAME = "RAZY_YZAR"
@@ -307,7 +307,12 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
             f"📝 Текст:\n<blockquote>{text}</blockquote>"
         )
         try:
-            await bot.send_message(admin_id, notice, parse_mode="HTML")
+            await bot.send_message(
+                admin_id, 
+                notice, 
+                parse_mode="HTML", 
+                reply_markup=ticket_keyboard(ticket_id)
+            )
         except Exception as e:
             logger.error(f"user_message_received notify admin: {e}")
 
@@ -500,4 +505,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-                                      
+        
