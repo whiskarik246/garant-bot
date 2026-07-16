@@ -22,7 +22,7 @@ from aiogram.types import (
 # ──────────────────────────────────────────────
 BOT_TOKEN      = "8984175960:AAGfRXKzHJ_3b79ONz5BXoag0fbc9wSY0ME"
 ADMIN_USERNAME = "RAZY_YZAR"
-SHOP_URL       = "https://t.me/wyxner"
+SHOP_URL       = "https://t.me/wyxner"  # Ссылку сохраняем, если понадобится в текстах
 DB_PATH        = "garant.db"
 
 # ──────────────────────────────────────────────
@@ -165,21 +165,21 @@ class AdminStates(StatesGroup):
 #  КЛАВИАТУРЫ
 # ──────────────────────────────────────────────
 
-# 1. ТА САМАЯ КНОПКА СНИЗУ (ПОД ИКОНКОЙ С КРУЖОЧКАМИ)
+# Нижняя кнопка под полем ввода
 def bottom_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📱 Меню")]
         ],
-        resize_keyboard=True # Делает кнопку компактной и красивой
+        resize_keyboard=True
     )
 
 
-# 2. Инлайн-кнопки под сообщениями
+# Главное меню бота (вместо прямой ссылки теперь колбэк "shop_menu")
 def main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="🤝 Написать гаранту", callback_data="write_garant")],
-        [InlineKeyboardButton(text="🛍️ Магазин", url=SHOP_URL)],
+        [InlineKeyboardButton(text="🛍️ Магазин", callback_data="shop_menu")],
     ]
     if is_admin:
         buttons.append(
@@ -188,6 +188,24 @@ def main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# Клавиатура выбора категорий в магазине
+def shop_categories_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Виртуальные аккаунты", callback_data="shop_accounts")],
+        [InlineKeyboardButton(text="📢 Каналы с подписчиками", callback_data="shop_channels")],
+        [InlineKeyboardButton(text="🔙 Назад в главное меню", callback_data="back_to_main")]
+    ])
+
+
+# Универсальная кнопка возврата в меню магазина
+def back_to_shop_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤝 Написать гаранту", callback_data="write_garant")],
+        [InlineKeyboardButton(text="🔙 Назад в магазин", callback_data="shop_menu")]
+    ])
+
+
+# Клавиатура управления тикетом (для админа)
 def ticket_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -236,7 +254,21 @@ dp  = Dispatcher(storage=MemoryStorage())
 #  ОБРАБОТЧИКИ
 # ──────────────────────────────────────────────
 
-# Хелпер для генерации и отправки стартового меню
+# Хелпер для генерации текста главного меню
+def get_start_menu_text(full_name: str, admin: bool) -> str:
+    greeting = (
+        f"👋 Привет, <b>{full_name}</b>!\n\n"
+        f"Я — бот-гарант. Здесь вы можете:\n"
+        f"• Написать гаранту по сделке\n"
+        f"• Перейти в наш магазин товаров\n\n"
+        f"Выберите действие:"
+    )
+    if admin:
+        greeting += "\n\n<i>🔐 Вы вошли как администратор.</i>"
+    return greeting
+
+
+# Отправка стартового меню (новым сообщением)
 async def send_start_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = message.from_user
@@ -249,24 +281,14 @@ async def send_start_menu(message: Message, state: FSMContext) -> None:
         logger.error(f"save_admin_id_if_needed: {e}")
 
     admin = is_admin(username)
-    greeting = (
-        f"👋 Привет, <b>{user.full_name}</b>!\n\n"
-        f"Я — бот-гарант. Здесь вы можете:\n"
-        f"• Написать гаранту по сделке\n"
-        f"• Перейти в магазин\n\n"
-        f"Выберите действие:"
-    )
-    if admin:
-        greeting += "\n\n<i>🔐 Вы вошли как администратор.</i>"
+    greeting = get_start_menu_text(user.full_name, admin)
 
     try:
-        # Отправляем инлайн-кнопки меню, а также прикрепляем ту самую нижнюю кнопку «📱 Меню»
         await message.answer(
             greeting, 
             reply_markup=main_keyboard(is_admin=admin), 
             parse_mode="HTML"
         )
-        # Отправляем нижнюю кнопку отдельным пустым (или скрытым) действием, чтобы она всегда была на экране
         await message.answer("Воспользуйтесь кнопкой «📱 Меню» ниже для быстрой навигации.", reply_markup=bottom_menu_keyboard())
     except Exception as e:
         logger.error(f"send_start_menu answer: {e}")
@@ -282,6 +304,26 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @dp.message(F.text == "📱 Меню")
 async def btn_menu_pressed(message: Message, state: FSMContext) -> None:
     await send_start_menu(message, state)
+
+
+# Возврат в главное меню через Inline-кнопку (редактированием сообщения)
+@dp.callback_query(F.data == "back_to_main")
+async def cb_back_to_main(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user = callback.from_user
+    admin = is_admin(user.username)
+    text = get_start_menu_text(user.full_name, admin)
+    
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=main_keyboard(is_admin=admin),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_back_to_main: {e}")
+        await callback.answer()
 
 
 # Кнопка «Написать гаранту»
@@ -308,7 +350,6 @@ async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
 # Получение сообщения от пользователя
 @dp.message(UserStates.waiting_for_message)
 async def user_message_received(message: Message, state: FSMContext) -> None:
-    # Игнорируем нажатие кнопки меню во время ввода сообщения, чтобы не ломать логику
     if message.text == "📱 Меню":
         await state.clear()
         await send_start_menu(message, state)
@@ -354,6 +395,92 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
         except Exception as e:
             logger.error(f"user_message_received notify admin: {e}")
 
+
+# ──────────────────────────────────────────────
+#  РАЗДЕЛ МАГАЗИНА
+# ──────────────────────────────────────────────
+
+# Главное меню магазина
+@dp.callback_query(F.data == "shop_menu")
+async def cb_shop_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    shop_text = (
+        "🛍️ <b>Добро пожаловать в наш магазин!</b>\n\n"
+        "Ниже представлены категории доступных товаров.\n"
+        "Выберите интересующий вас раздел:"
+    )
+    try:
+        await callback.message.edit_text(
+            shop_text,
+            reply_markup=shop_categories_keyboard(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_shop_menu: {e}")
+        await callback.answer()
+
+
+# Товар 1: Виртуальные аккаунты
+@dp.callback_query(F.data == "shop_accounts")
+async def cb_shop_accounts(callback: CallbackQuery) -> None:
+    accs_text = (
+        "👤 <b>Раздел: Виртуальные аккаунты</b>\n\n"
+        "🔒 <b>Обычный аккаунт</b>\n"
+        "├ <b>Отлега:</b> 1 неделя (Минимальная отлега 🙂)\n"
+        "├ <b>Описание:</b> Эконом выбор, есть отлега и шанс блокировки аккаунта снижен.\n"
+        "└ <b>Цена:</b> <code>80 ₽</code>\n\n"
+        "⚡ <b>Средний аккаунт</b>\n"
+        "├ <b>Отлега:</b> 2 недели (Средняя отлега 😄)\n"
+        "├ <b>Описание:</b> Шанс на риск блокировки в 5 раз меньше, хорошо за свою цену.\n"
+        "└ <b>Цена:</b> <code>100 ₽</code>\n\n"
+        "👑 <b>Максимальный аккаунт</b>\n"
+        "├ <b>Отлега:</b> 1 месяц (Максимальная отлега 😍)\n"
+        "├ <b>Описание:</b> Шанс на риск блокировки максимально снижен, лучший выбор.\n"
+        "└ <b>Цена:</b> <code>150 ₽</code>\n\n"
+        "<i>💡 Для покупки или уточнения деталей напишите нашему гаранту!</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            accs_text,
+            reply_markup=back_to_shop_keyboard(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_shop_accounts: {e}")
+        await callback.answer()
+
+
+# Товар 2: Каналы с подписчиками
+@dp.callback_query(F.data == "shop_channels")
+async def cb_shop_channels(callback: CallbackQuery) -> None:
+    channels_text = (
+        "📢 <b>Раздел: Каналы с подписчиками</b>\n\n"
+        "Доступные варианты накрутки/готовых каналов:\n\n"
+        "🙂 <b>100 ПД</b> — <code>50 ₽</code>\n"
+        "😊 <b>200 ПД</b> — <code>95 ₽</code>\n"
+        "😎 <b>300 ПД</b> — <code>140 ₽</code>\n"
+        "🔥 <b>500 ПД</b> — <code>230 ₽</code>\n"
+        "🚀 <b>700 ПД</b> — <code>310 ₽</code>\n"
+        "👑 <b>1000 ПД</b> — <code>430 ₽</code>\n\n"
+        "<i>💡 Для оформления заказа или консультации свяжитесь с гарантом через бота.</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            channels_text,
+            reply_markup=back_to_shop_keyboard(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_shop_channels: {e}")
+        await callback.answer()
+
+
+# ──────────────────────────────────────────────
+#  АДМИН-ПАНЕЛЬ
+# ──────────────────────────────────────────────
 
 # Кнопка «📥 Запросы» — показ тикетов
 @dp.callback_query(F.data == "admin_tickets")
@@ -432,7 +559,6 @@ async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
 # Получение ответа от админа
 @dp.message(AdminStates.waiting_for_reply_text)
 async def admin_reply_received(message: Message, state: FSMContext) -> None:
-    # Игнорируем нажатие кнопки меню во время ответа
     if message.text == "📱 Меню":
         await state.clear()
         await send_start_menu(message, state)
@@ -469,84 +595,4 @@ async def admin_reply_received(message: Message, state: FSMContext) -> None:
     except Exception as e:
         logger.error(f"admin_reply_received send to user {user_id}: {e}")
 
-    db_update_ticket_status(ticket_id, "closed")
-
-    if msg_id:
-        try:
-            await bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=msg_id, reply_markup=None)
-        except Exception:
-            pass
-
-    if sent:
-        await message.answer(
-            f"✅ <b>Ответ отправлен!</b>\n"
-            f"🎫 Тикет <b>#{ticket_id}</b> закрыт.",
-            parse_mode="HTML"
-        )
-    else:
-        await message.answer(
-            f"⚠️ <b>Не удалось доставить сообщение пользователю</b> (возможно, заблокировал бота).\n"
-            f"🎫 Тикет <b>#{ticket_id}</b> закрыт.",
-            parse_mode="HTML"
-        )
-
-
-# Кнопка «❌ Отклонить»
-@dp.callback_query(F.data.startswith("reject_"))
-async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.username):
-        await callback.answer("⛔ Нет доступа.", show_alert=True)
-        return
-
-    ticket_id = int(callback.data.split("_")[1])
-    ticket    = db_get_ticket(ticket_id)
-
-    if not ticket:
-        await callback.answer("❌ Тикет не найден.", show_alert=True)
-        return
-
-    if ticket["status"] != "open":
-        await callback.answer("⚠️ Тикет уже закрыт.", show_alert=True)
-        return
-
-    user_id = ticket["user_id"]
-    db_update_ticket_status(ticket_id, "rejected")
-
-    reject_msg = (
-        f"❌ <b>Ваш запрос был отклонён гарантом.</b>\n\n"
-        f"<i>Если вы считаете, что это ошибка — напишите снова через /start</i>"
-    )
-    try:
-        await bot.send_message(user_id, reject_msg, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"cb_reject_ticket send to user {user_id}: {e}")
-
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
-    await callback.message.answer(
-        f"🗑️ <b>Тикет #{ticket_id} отклонён.</b>\n"
-        f"Пользователь @{ticket.get('username', '?')} уведомлён.",
-        parse_mode="HTML"
-    )
-    await callback.answer("Отклонено.")
-
-
-# ──────────────────────────────────────────────
-#  ТОЧКА ВХОДА
-# ──────────────────────────────────────────────
-async def main() -> None:
-    init_db()
-    logger.info("Бот запускается...")
-    try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        await bot.session.close()
-        logger.info("Бот остановлен.")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-        
+    db_upda
