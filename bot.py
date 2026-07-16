@@ -13,10 +13,12 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 
 # ──────────────────────────────────────────────
-#  КОНФИГУРАЦИЯ (С САМЫМ НОВЫМ ТОКЕНОМ)
+#  КОНФИГУРАЦИЯ (С ТВОИМ ТОКЕНОМ)
 # ──────────────────────────────────────────────
 BOT_TOKEN      = "8984175960:AAGfRXKzHJ_3b79ONz5BXoag0fbc9wSY0ME"
 ADMIN_USERNAME = "RAZY_YZAR"
@@ -162,6 +164,18 @@ class AdminStates(StatesGroup):
 # ──────────────────────────────────────────────
 #  КЛАВИАТУРЫ
 # ──────────────────────────────────────────────
+
+# 1. ТА САМАЯ КНОПКА СНИЗУ (ПОД ИКОНКОЙ С КРУЖОЧКАМИ)
+def bottom_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Меню")]
+        ],
+        resize_keyboard=True # Делает кнопку компактной и красивой
+    )
+
+
+# 2. Инлайн-кнопки под сообщениями
 def main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="🤝 Написать гаранту", callback_data="write_garant")],
@@ -222,9 +236,8 @@ dp  = Dispatcher(storage=MemoryStorage())
 #  ОБРАБОТЧИКИ
 # ──────────────────────────────────────────────
 
-# /start
-@dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext) -> None:
+# Хелпер для генерации и отправки стартового меню
+async def send_start_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = message.from_user
     username = user.username if user else None
@@ -247,9 +260,28 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         greeting += "\n\n<i>🔐 Вы вошли как администратор.</i>"
 
     try:
-        await message.answer(greeting, reply_markup=main_keyboard(is_admin=admin), parse_mode="HTML")
+        # Отправляем инлайн-кнопки меню, а также прикрепляем ту самую нижнюю кнопку «📱 Меню»
+        await message.answer(
+            greeting, 
+            reply_markup=main_keyboard(is_admin=admin), 
+            parse_mode="HTML"
+        )
+        # Отправляем нижнюю кнопку отдельным пустым (или скрытым) действием, чтобы она всегда была на экране
+        await message.answer("Воспользуйтесь кнопкой «📱 Меню» ниже для быстрой навигации.", reply_markup=bottom_menu_keyboard())
     except Exception as e:
-        logger.error(f"cmd_start answer: {e}")
+        logger.error(f"send_start_menu answer: {e}")
+
+
+# Обработка команды /start
+@dp.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await send_start_menu(message, state)
+
+
+# ОБРАБОТЧИК ДЛЯ НАЖАТИЯ НА КНОПКУ «📱 Меню»
+@dp.message(F.text == "📱 Меню")
+async def btn_menu_pressed(message: Message, state: FSMContext) -> None:
+    await send_start_menu(message, state)
 
 
 # Кнопка «Написать гаранту»
@@ -276,6 +308,12 @@ async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
 # Получение сообщения от пользователя
 @dp.message(UserStates.waiting_for_message)
 async def user_message_received(message: Message, state: FSMContext) -> None:
+    # Игнорируем нажатие кнопки меню во время ввода сообщения, чтобы не ломать логику
+    if message.text == "📱 Меню":
+        await state.clear()
+        await send_start_menu(message, state)
+        return
+
     await state.clear()
     user     = message.from_user
     user_id  = user.id
@@ -394,6 +432,12 @@ async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
 # Получение ответа от админа
 @dp.message(AdminStates.waiting_for_reply_text)
 async def admin_reply_received(message: Message, state: FSMContext) -> None:
+    # Игнорируем нажатие кнопки меню во время ответа
+    if message.text == "📱 Меню":
+        await state.clear()
+        await send_start_menu(message, state)
+        return
+
     data      = await state.get_data()
     ticket_id = data.get("ticket_id")
     msg_id    = data.get("message_id")
@@ -505,4 +549,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
