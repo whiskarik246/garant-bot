@@ -18,7 +18,7 @@ from aiogram.types import (
 # ──────────────────────────────────────────────
 #  КОНФИГУРАЦИЯ
 # ──────────────────────────────────────────────
-BOT_TOKEN      = "8688649946:AAGmy2Dk-vKowqqA4kqgEbVVBgwotj9ppUM"
+BOT_TOKEN      = "8253893194:AAGkVF4oVU5v9kaCdFQsVWgdwrQ5NAeXLNc"
 ADMIN_USERNAME = "RAZY_YZAR"
 SHOP_URL       = "https://t.me/wyxner"
 DB_PATH        = "garant.db"
