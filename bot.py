@@ -1,193 +1,488 @@
 import asyncio
 import logging
 import sqlite3
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
-# ================= НАСТРОЙКИ (ЗАМЕНИ НА СВОИ) =================
-BOT_TOKEN = "8253893194:AAGkVF4oVU5v9kaCdFQsVWgdwrQ5NAeXLNc"  # Токен твоего бота
-ADMIN_ID = 7130111876  # Твой числовой Telegram ID (узнай в @userinfobot)
-SHOP_URL = "https://t.me/wyxner"  # Ссылка на твой магазин
-# =============================================================
+# ──────────────────────────────────────────────
+#  КОНФИГУРАЦИЯ
+# ──────────────────────────────────────────────
+BOT_TOKEN      = "8688649946:AAGmy2Dk-vKowqqA4kqgEbVVBgwotj9ppUM"
+ADMIN_USERNAME = "RAZY_YZAR"
+SHOP_URL       = "https://t.me/wyxner"
+DB_PATH        = "garant.db"
 
-logging.basicConfig(level=logging.INFO)
+# ──────────────────────────────────────────────
+#  ЛОГИРОВАНИЕ
+# ──────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(asctime)s — %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
-# Инициализируем бота и диспетчер
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+# ──────────────────────────────────────────────
+#  БАЗА ДАННЫХ
+# ──────────────────────────────────────────────
+def get_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-# Функция для автоматического создания базы данных
-def init_db():
-    conn = sqlite3.connect("garant.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            username TEXT,
-            message_text TEXT,
-            status TEXT DEFAULT 'open'
+
+def init_db() -> None:
+    try:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL,
+                    username     TEXT,
+                    message_text TEXT NOT NULL,
+                    status       TEXT NOT NULL DEFAULT 'open'
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS config (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            conn.commit()
+        logger.info("База данных инициализирована успешно.")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации БД: {e}")
+        raise
+
+
+def db_get_config(key: str) -> str | None:
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM config WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else None
+    except Exception as e:
+        logger.error(f"db_get_config({key}): {e}")
+        return None
+
+
+def db_set_config(key: str, value: str) -> None:
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO config (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"db_set_config({key}={value}): {e}")
+
+
+def db_create_ticket(user_id: int, username: str | None, message_text: str) -> int:
+    try:
+        with get_connection() as conn:
+            cursor = conn.execute(
+                "INSERT INTO tickets (user_id, username, message_text, status) "
+                "VALUES (?, ?, ?, 'open')",
+                (user_id, username or "unknown", message_text),
+            )
+            conn.commit()
+            ticket_id = cursor.lastrowid
+            logger.info(f"Создан тикет #{ticket_id} от user_id={user_id}")
+            return ticket_id
+    except Exception as e:
+        logger.error(f"db_create_ticket: {e}")
+        return -1
+
+
+def db_get_open_tickets(limit: int = 10) -> list:
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tickets WHERE status = 'open' "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"db_get_open_tickets: {e}")
+        return []
+
+
+def db_get_ticket(ticket_id: int) -> dict | None:
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"db_get_ticket({ticket_id}): {e}")
+        return None
+
+
+def db_update_ticket_status(ticket_id: int, status: str) -> None:
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE tickets SET status = ? WHERE id = ?",
+                (status, ticket_id),
+            )
+            conn.commit()
+            logger.info(f"Тикет #{ticket_id} → статус '{status}'")
+    except Exception as e:
+        logger.error(f"db_update_ticket_status({ticket_id}, {status}): {e}")
+
+
+# ──────────────────────────────────────────────
+#  FSM — СОСТОЯНИЯ
+# ──────────────────────────────────────────────
+class UserStates(StatesGroup):
+    waiting_for_message = State()
+
+
+class AdminStates(StatesGroup):
+    waiting_for_reply_text = State()
+
+
+# ──────────────────────────────────────────────
+#  КЛАВИАТУРЫ
+# ──────────────────────────────────────────────
+def main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="🤝 Написать гаранту", callback_data="write_garant")],
+        [InlineKeyboardButton(text="🛍️ Магазин", url=SHOP_URL)],
+    ]
+    if is_admin:
+        buttons.append(
+            [InlineKeyboardButton(text="📥 Запросы", callback_data="admin_tickets")]
         )
-    """)
-    conn.commit()
-    conn.close()
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# Запускаем создание БД при старте бота
-init_db()
 
-# Состояния ожидания ввода (для FSM)
-class Form(StatesGroup):
-    waiting_for_user_message = State()
-    waiting_for_admin_reply = State()
+def ticket_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✍️ Ответить",
+                callback_data=f"reply_{ticket_id}",
+            ),
+            InlineKeyboardButton(
+                text="❌ Отклонить",
+                callback_data=f"reject_{ticket_id}",
+            ),
+        ]
+    ])
 
-# Клавиатура главного меню
-def main_menu_keyboard(user_id: int):
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🤝 Написать гаранту", callback_data="write_garant"))
-    builder.row(types.InlineKeyboardButton(text="🛍️ Магазин", url=SHOP_URL))
-    
-    # Кнопку просмотра запросов видит ТОЛЬКО админ
-    if user_id == ADMIN_ID:
-        builder.row(types.InlineKeyboardButton(text="📥 Запросы", callback_data="admin_tickets"))
-        
-    return builder.as_markup()
 
-# --- ОБРАБОТКА КОМАНД И КНОПОК ---
+# ──────────────────────────────────────────────
+#  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ──────────────────────────────────────────────
+def is_admin(username: str | None) -> bool:
+    if not username:
+        return False
+    return username.lstrip("@").lower() == ADMIN_USERNAME.lower()
 
-# Команда /start
+
+def get_admin_id() -> int | None:
+    val = db_get_config("admin_id")
+    return int(val) if val else None
+
+
+async def save_admin_id_if_needed(user_id: int, username: str | None) -> None:
+    if is_admin(username):
+        existing = db_get_config("admin_id")
+        if not existing:
+            db_set_config("admin_id", str(user_id))
+            logger.info(f"Admin ID сохранён: {user_id} (@{username})")
+
+
+# ──────────────────────────────────────────────
+#  ИНИЦИАЛИЗАЦИЯ БОТА
+# ──────────────────────────────────────────────
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+dp  = Dispatcher(storage=MemoryStorage())
+
+
+# ──────────────────────────────────────────────
+#  ОБРАБОТЧИКИ
+# ──────────────────────────────────────────────
+
+# /start
 @dp.message(Command("start"))
-async def start_cmd(message: types.Message, state: FSMContext):
+async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(
-        "👋 Добро пожаловать! Я бот-помощник гаранта.\nВыберите интересующий вас раздел меню ниже:",
-        reply_markup=main_menu_keyboard(message.from_user.id)
+    user = message.from_user
+    username = user.username if user else None
+    user_id  = user.id if user else None
+
+    try:
+        await save_admin_id_if_needed(user_id, username)
+    except Exception as e:
+        logger.error(f"save_admin_id_if_needed: {e}")
+
+    admin = is_admin(username)
+    greeting = (
+        f"👋 Привет, <b>{user.full_name}</b>!\n\n"
+        f"Я — бот-гарант. Здесь вы можете:\n"
+        f"• Написать гаранту по сделке\n"
+        f"• Перейти в магазин\n\n"
+        f"Выберите действие:"
     )
+    if admin:
+        greeting += "\n\n<i>🔐 Вы вошли как администратор.</i>"
 
-# Пользователь нажал "Написать гаранту"
+    try:
+        await message.answer(greeting, reply_markup=main_keyboard(is_admin=admin))
+    except Exception as e:
+        logger.error(f"cmd_start answer: {e}")
+
+
+# Кнопка «Написать гаранту»
 @dp.callback_query(F.data == "write_garant")
-async def ask_for_message(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await callback.message.answer("📝 Напишите снизу сообщение для гаранта (отвечает в течение дня):")
-    await state.set_state(Form.waiting_for_user_message)
-
-# Прием сообщения от пользователя
-@dp.message(Form.waiting_for_user_message)
-async def receive_user_message(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    username = f"@{message.from_user.username}" if message.from_user.username else "Без юзернейма"
-    text = message.text
-
-    if not text:
-        await message.answer("Пожалуйста, отправьте текстовое сообщение.")
+async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
+    user = callback.from_user
+    if is_admin(user.username):
+        await callback.answer("Вы администратор.", show_alert=False)
         return
 
-    # Записываем запрос в базу данных SQLite
-    conn = sqlite3.connect("garant.db")
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO tickets (user_id, username, message_text) VALUES (?, ?, ?)",
-        (user_id, username, text)
-    )
-    conn.commit()
-    conn.close()
-
-    await message.answer("✅ Сообщение отправлено, ожидайте ответа.", reply_markup=main_menu_keyboard(user_id))
-    
-    # Отправляем мгновенное уведомление админу (вам)
+    await state.set_state(UserStates.waiting_for_message)
     try:
-        await bot.send_message(
-            ADMIN_ID, 
-            f"🔔 **Новый запрос!**\nОт: {username} (ID: {user_id})\nТекст: {text}\n\nЧтобы ответить, нажмите кнопку 'Запросы' в меню."
+        await callback.message.answer(
+            "✏️ <b>Напишите ваше сообщение гаранту:</b>\n"
+            "<i>Опишите суть вопроса или сделки как можно подробнее.</i>"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_write_garant: {e}")
+        await callback.answer("Ошибка. Попробуйте позже.", show_alert=True)
+
+
+# Получение сообщения от пользователя
+@dp.message(UserStates.waiting_for_message)
+async def user_message_received(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    user     = message.from_user
+    user_id  = user.id
+    username = user.username or "нет username"
+    text     = message.text or ""
+
+    if not text.strip():
+        await message.answer("❗ Пожалуйста, отправьте текстовое сообщение.")
+        await state.set_state(UserStates.waiting_for_message)
+        return
+
+    ticket_id = db_create_ticket(user_id, user.username, text)
+
+    try:
+        await message.answer(
+            "✅ <b>Сообщение отправлено, ожидайте ответа.</b>\n"
+            "<i>Гарант свяжется с вами в ближайшее время.</i>"
         )
     except Exception as e:
-        logging.error(f"Не удалось отправить уведомление админу: {e}")
-        
-    await state.clear()
+        logger.error(f"user_message_received answer user: {e}")
 
-# --- КНОПКИ АДМИНИСТРАТОРА ---
+    admin_id = get_admin_id()
+    if admin_id:
+        notice = (
+            f"🔔 <b>Новый запрос!</b>\n\n"
+            f"👤 От: @{username} (ID: <code>{user_id}</code>)\n"
+            f"🎫 Тикет: <b>#{ticket_id}</b>\n"
+            f"📝 Текст:\n<blockquote>{text}</blockquote>"
+        )
+        try:
+            await bot.send_message(admin_id, notice)
+        except Exception as e:
+            logger.error(f"user_message_received notify admin: {e}")
 
-# Просмотр списка активных запросов
+
+# Кнопка «📥 Запросы» — показ тикетов
 @dp.callback_query(F.data == "admin_tickets")
-async def admin_tickets_list(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещен!", show_alert=True)
+async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.username):
+        await callback.answer("⛔ Нет доступа.", show_alert=True)
         return
 
-    conn = sqlite3.connect("garant.db")
-    cursor = conn.cursor()
-    # Берем последние 10 открытых запросов
-    cursor.execute("SELECT id, username, message_text FROM tickets WHERE status = 'open' LIMIT 10")
-    tickets = cursor.fetchall()
-    conn.close()
+    await state.clear()
+    tickets = db_get_open_tickets(10)
 
     if not tickets:
-        await callback.answer("Нет новых запросов!", show_alert=True)
+        await callback.message.answer("📭 <b>Открытых запросов нет.</b>")
+        await callback.answer()
         return
 
-    await callback.answer()
-    await callback.message.answer("📥 **Список активных запросов (последние 10):**")
-    
-    for ticket_id, username, text in tickets:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="✍️ Ответить", callback_data=f"reply_{ticket_id}"))
-        await callback.message.answer(
-            f"🎫 **Запрос #{ticket_id}**\nПользователь: {username}\n\n💬 Текст:\n{text}",
-            reply_markup=builder.as_markup()
-        )
+    await callback.message.answer(
+        f"📋 <b>Открытые запросы ({len(tickets)} шт.):</b>\n"
+        f"<i>Показаны последние 10</i>"
+    )
 
-# Админ нажал кнопку "Ответить" под запросом
+    for t in tickets:
+        uname = t.get("username") or "нет username"
+        uid   = t.get("user_id")
+        tid   = t.get("id")
+        txt   = t.get("message_text", "")
+        preview = txt[:300] + ("..." if len(txt) > 300 else "")
+
+        card = (
+            f"🎫 <b>Тикет #{tid}</b>\n"
+            f"👤 @{uname} (ID: <code>{uid}</code>)\n"
+            f"📝 <blockquote>{preview}</blockquote>"
+        )
+        try:
+            await callback.message.answer(card, reply_markup=ticket_keyboard(tid))
+        except Exception as e:
+            logger.error(f"cb_admin_tickets send card: {e}")
+
+    await callback.answer()
+
+
+# Кнопка «✍️ Ответить»
 @dp.callback_query(F.data.startswith("reply_"))
-async def admin_prepare_reply(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещен!", show_alert=True)
+async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.username):
+        await callback.answer("⛔ Нет доступа.", show_alert=True)
         return
 
     ticket_id = int(callback.data.split("_")[1])
-    await callback.answer()
-    await callback.message.answer(f"✍️ Введите ответ на запрос #{ticket_id}:")
-    await state.update_data(reply_to_ticket=ticket_id)
-    await state.set_state(Form.waiting_for_admin_reply)
+    ticket    = db_get_ticket(ticket_id)
 
-# Отправка ответа пользователю
-@dp.message(Form.waiting_for_admin_reply)
-async def admin_send_reply(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
+    if not ticket:
+        await callback.answer("❌ Тикет не найден.", show_alert=True)
         return
 
-    data = await state.get_data()
-    ticket_id = data.get("reply_to_ticket")
-    admin_text = message.text
+    if ticket["status"] != "open":
+        await callback.answer("⚠️ Тикет уже закрыт.", show_alert=True)
+        return
 
-    conn = sqlite3.connect("garant.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM tickets WHERE id = ?", (ticket_id,))
-    result = cursor.fetchone()
-    
-    if result:
-        user_id = result[0]
-        try:
-            # Отправляем ответ пользователю в ЛС от имени бота
-            await bot.send_message(user_id, f"💬 **Ответ от гаранта:**\n\n{admin_text}")
-            await message.answer(f"✅ Ответ успешно доставлен пользователю (ID: {user_id})!")
-            
-            # Меняем статус запроса на закрытый
-            cursor.execute("UPDATE tickets SET status = 'closed' WHERE id = ?", (ticket_id,))
-            conn.commit()
-        except Exception as e:
-            await message.answer(f"❌ Не удалось отправить (возможно, пользователь заблокировал бота): {e}")
-    else:
-        await message.answer("❌ Запрос не найден в базе данных.")
+    await state.set_state(AdminStates.waiting_for_reply_text)
+    await state.update_data(ticket_id=ticket_id)
 
-    conn.close()
+    try:
+        await callback.message.answer(
+            f"✏️ <b>Введите ответ на тикет #{ticket_id}:</b>\n"
+            f"<i>Ваш ответ будет отправлен пользователю @{ticket.get('username', '?')} в ЛС.</i>"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_reply_ticket: {e}")
+        await callback.answer("Ошибка. Попробуйте позже.", show_alert=True)
+
+
+# Получение ответа от админа
+@dp.message(AdminStates.waiting_for_reply_text)
+async def admin_reply_received(message: Message, state: FSMContext) -> None:
+    data      = await state.get_data()
+    ticket_id = data.get("ticket_id")
     await state.clear()
 
-# Главная функция запуска
-async def main():
-    await dp.start_polling(bot)
+    reply_text = message.text or ""
+    if not reply_text.strip():
+        await message.answer("❗ Ответ не может быть пустым.")
+        await state.set_state(AdminStates.waiting_for_reply_text)
+        await state.update_data(ticket_id=ticket_id)
+        return
+
+    ticket = db_get_ticket(ticket_id)
+    if not ticket:
+        await message.answer("❌ Тикет не найден в БД.")
+        return
+
+    user_id = ticket["user_id"]
+    reply_msg = (
+        f"📬 <b>Ответ гаранта на ваш запрос</b>\n\n"
+        f"<blockquote>{reply_text}</blockquote>\n\n"
+        f"<i>Если у вас остались вопросы — напишите снова через /start</i>"
+    )
+
+    sent = False
+    try:
+        await bot.send_message(user_id, reply_msg)
+        sent = True
+    except Exception as e:
+        logger.error(f"admin_reply_received send to user {user_id}: {e}")
+
+    db_update_ticket_status(ticket_id, "closed")
+
+    if sent:
+        await message.answer(
+            f"✅ <b>Ответ отправлен!</b>\n"
+            f"🎫 Тикет <b>#{ticket_id}</b> закрыт."
+        )
+    else:
+        await message.answer(
+            f"⚠️ <b>Не удалось доставить сообщение пользователю</b> (возможно, заблокировал бота).\n"
+            f"🎫 Тикет <b>#{ticket_id}</b> закрыт."
+        )
+
+
+# Кнопка «❌ Отклонить»
+@dp.callback_query(F.data.startswith("reject_"))
+async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.username):
+        await callback.answer("⛔ Нет доступа.", show_alert=True)
+        return
+
+    ticket_id = int(callback.data.split("_")[1])
+    ticket    = db_get_ticket(ticket_id)
+
+    if not ticket:
+        await callback.answer("❌ Тикет не найден.", show_alert=True)
+        return
+
+    if ticket["status"] != "open":
+        await callback.answer("⚠️ Тикет уже закрыт.", show_alert=True)
+        return
+
+    user_id = ticket["user_id"]
+    db_update_ticket_status(ticket_id, "rejected")
+
+    reject_msg = (
+        f"❌ <b>Ваш запрос был отклонён гарантом.</b>\n\n"
+        f"<i>Если вы считаете, что это ошибка — напишите снова через /start</i>"
+    )
+    try:
+        await bot.send_message(user_id, reject_msg)
+    except Exception as e:
+        logger.error(f"cb_reject_ticket send to user {user_id}: {e}")
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await callback.message.answer(
+        f"🗑️ <b>Тикет #{ticket_id} отклонён.</b>\n"
+        f"Пользователь @{ticket.get('username', '?')} уведомлён."
+    )
+    await callback.answer("Отклонено.")
+
+
+# ──────────────────────────────────────────────
+#  ТОЧКА ВХОДА
+# ──────────────────────────────────────────────
+async def main() -> None:
+    init_db()
+    logger.info("Бот запускается...")
+    try:
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        await bot.session.close()
+        logger.info("Бот остановлен.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
+                                  
