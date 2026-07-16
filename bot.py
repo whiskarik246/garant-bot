@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -213,7 +214,8 @@ async def save_admin_id_if_needed(user_id: int, username: str | None) -> None:
 # ──────────────────────────────────────────────
 #  ИНИЦИАЛИЗАЦИЯ БОТА
 # ──────────────────────────────────────────────
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+# Исправлена инициализация parse_mode для aiogram 3.x
+bot = Bot(token=BOT_TOKEN, default_properties=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp  = Dispatcher(storage=MemoryStorage())
 
 
@@ -368,7 +370,8 @@ async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.set_state(AdminStates.waiting_for_reply_text)
-    await state.update_data(ticket_id=ticket_id)
+    # Запоминаем ID тикета и ID сообщения, чтобы потом отредактировать в нем кнопки
+    await state.update_data(ticket_id=ticket_id, message_id=callback.message.message_id)
 
     try:
         await callback.message.answer(
@@ -386,13 +389,14 @@ async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
 async def admin_reply_received(message: Message, state: FSMContext) -> None:
     data      = await state.get_data()
     ticket_id = data.get("ticket_id")
+    msg_id    = data.get("message_id")
     await state.clear()
 
     reply_text = message.text or ""
     if not reply_text.strip():
         await message.answer("❗ Ответ не может быть пустым.")
         await state.set_state(AdminStates.waiting_for_reply_text)
-        await state.update_data(ticket_id=ticket_id)
+        await state.update_data(ticket_id=ticket_id, message_id=msg_id)
         return
 
     ticket = db_get_ticket(ticket_id)
@@ -415,6 +419,13 @@ async def admin_reply_received(message: Message, state: FSMContext) -> None:
         logger.error(f"admin_reply_received send to user {user_id}: {e}")
 
     db_update_ticket_status(ticket_id, "closed")
+
+    # Убираем инлайн-кнопки у сообщения тикета, так как на него ответили
+    if msg_id:
+        try:
+            await bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=msg_id, reply_markup=None)
+        except Exception:
+            pass
 
     if sent:
         await message.answer(
@@ -485,4 +496,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-                                  
+        
