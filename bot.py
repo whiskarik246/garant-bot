@@ -18,7 +18,7 @@ from aiogram.types import (
 )
 
 # ──────────────────────────────────────────────
-#  КОНФИГУРАЦИЯ (С ТВОИМ ТОКЕНОМ)
+#  КОНФИГУРАЦИЯ
 # ──────────────────────────────────────────────
 BOT_TOKEN      = "8984175960:AAGfRXKzHJ_3b79ONz5BXoag0fbc9wSY0ME"
 ADMIN_USERNAME = "RAZY_YZAR"
@@ -42,7 +42,6 @@ def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def init_db() -> None:
     try:
@@ -74,7 +73,6 @@ def init_db() -> None:
         logger.error(f"Ошибка инициализации БД: {e}")
         raise
 
-
 def db_get_config(key: str) -> str | None:
     try:
         with get_connection() as conn:
@@ -85,7 +83,6 @@ def db_get_config(key: str) -> str | None:
     except Exception as e:
         logger.error(f"db_get_config({key}): {e}")
         return None
-
 
 def db_set_config(key: str, value: str) -> None:
     try:
@@ -98,7 +95,6 @@ def db_set_config(key: str, value: str) -> None:
             conn.commit()
     except Exception as e:
         logger.error(f"db_set_config({key}={value}): {e}")
-
 
 def db_create_ticket(user_id: int, username: str | None, message_text: str) -> int:
     try:
@@ -116,7 +112,6 @@ def db_create_ticket(user_id: int, username: str | None, message_text: str) -> i
         logger.error(f"db_create_ticket: {e}")
         return -1
 
-
 def db_get_open_tickets(limit: int = 10) -> list:
     try:
         with get_connection() as conn:
@@ -130,7 +125,6 @@ def db_get_open_tickets(limit: int = 10) -> list:
         logger.error(f"db_get_open_tickets: {e}")
         return []
 
-
 def db_get_ticket(ticket_id: int) -> dict | None:
     try:
         with get_connection() as conn:
@@ -141,7 +135,6 @@ def db_get_ticket(ticket_id: int) -> dict | None:
     except Exception as e:
         logger.error(f"db_get_ticket({ticket_id}): {e}")
         return None
-
 
 def db_update_ticket_status(ticket_id: int, status: str) -> None:
     try:
@@ -155,7 +148,6 @@ def db_update_ticket_status(ticket_id: int, status: str) -> None:
     except Exception as e:
         logger.error(f"db_update_ticket_status({ticket_id}, {status}): {e}")
 
-
 # Функции для Чёрного Списка
 def db_add_to_blacklist(user_id: int, username: str | None) -> None:
     try:
@@ -168,7 +160,6 @@ def db_add_to_blacklist(user_id: int, username: str | None) -> None:
     except Exception as e:
         logger.error(f"db_add_to_blacklist({user_id}): {e}")
 
-
 def db_remove_from_blacklist(user_id: int) -> None:
     try:
         with get_connection() as conn:
@@ -176,7 +167,6 @@ def db_remove_from_blacklist(user_id: int) -> None:
             conn.commit()
     except Exception as e:
         logger.error(f"db_remove_from_blacklist({user_id}): {e}")
-
 
 def db_is_blacklisted(user_id: int) -> bool:
     try:
@@ -189,7 +179,6 @@ def db_is_blacklisted(user_id: int) -> bool:
         logger.error(f"db_is_blacklisted({user_id}): {e}")
         return False
 
-
 def db_get_blacklist() -> list:
     try:
         with get_connection() as conn:
@@ -199,22 +188,18 @@ def db_get_blacklist() -> list:
         logger.error(f"db_get_blacklist: {e}")
         return []
 
-
 # ──────────────────────────────────────────────
 #  FSM — СОСТОЯНИЯ
 # ──────────────────────────────────────────────
 class UserStates(StatesGroup):
     waiting_for_message = State()
 
-
 class AdminStates(StatesGroup):
     waiting_for_reply_text = State()
-
 
 # ──────────────────────────────────────────────
 #  КЛАВИАТУРЫ
 # ──────────────────────────────────────────────
-
 def bottom_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -223,20 +208,17 @@ def bottom_menu_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-
 def main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="🤝 Написать гаранту", callback_data="write_garant")],
         [InlineKeyboardButton(text="🛍️ Магазин", url=SHOP_URL)],
     ]
     if is_admin:
-        # Для админа добавляем в ряд кнопки Запросы и ЧС
         buttons.append([
             InlineKeyboardButton(text="📥 Запросы", callback_data="admin_tickets"),
             InlineKeyboardButton(text="🚫 ЧС (Список)", callback_data="admin_blacklist")
         ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
 
 def ticket_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -247,12 +229,10 @@ def ticket_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
         ]
     ])
 
-
 def unban_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🟢 Разбанить", callback_data=f"unban_{user_id}")]
     ])
-
 
 # ──────────────────────────────────────────────
 #  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -262,11 +242,9 @@ def is_admin(username: str | None) -> bool:
         return False
     return username.lstrip("@").lower() == ADMIN_USERNAME.lower()
 
-
 def get_admin_id() -> int | None:
     val = db_get_config("admin_id")
     return int(val) if val else None
-
 
 async def save_admin_id_if_needed(user_id: int, username: str | None) -> None:
     if is_admin(username):
@@ -275,18 +253,15 @@ async def save_admin_id_if_needed(user_id: int, username: str | None) -> None:
             db_set_config("admin_id", str(user_id))
             logger.info(f"Admin ID сохранён: {user_id} (@{username})")
 
-
 # ──────────────────────────────────────────────
 #  ИНИЦИАЛИЗАЦИЯ БОТА
 # ──────────────────────────────────────────────
 bot = Bot(token=BOT_TOKEN, default_properties=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp  = Dispatcher(storage=MemoryStorage())
 
-
 # ──────────────────────────────────────────────
 #  ОБРАБОТЧИКИ
 # ──────────────────────────────────────────────
-
 async def send_start_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = message.from_user
@@ -323,16 +298,13 @@ async def send_start_menu(message: Message, state: FSMContext) -> None:
     except Exception as e:
         logger.error(f"send_start_menu answer: {e}")
 
-
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await send_start_menu(message, state)
 
-
 @dp.message(F.text == "📱 Меню")
 async def btn_menu_pressed(message: Message, state: FSMContext) -> None:
     await send_start_menu(message, state)
-
 
 @dp.callback_query(F.data == "write_garant")
 async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
@@ -357,7 +329,6 @@ async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
     except Exception as e:
         logger.error(f"cb_write_garant: {e}")
         await callback.answer("Ошибка. Попробуйте позже.", show_alert=True)
-
 
 @dp.message(UserStates.waiting_for_message)
 async def user_message_received(message: Message, state: FSMContext) -> None:
@@ -412,7 +383,6 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
         except Exception as e:
             logger.error(f"user_message_received notify admin: {e}")
 
-
 @dp.callback_query(F.data == "admin_tickets")
 async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.username):
@@ -452,7 +422,6 @@ async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
 
     await callback.answer()
 
-
 @dp.callback_query(F.data.startswith("reply_"))
 async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.username):
@@ -483,7 +452,6 @@ async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     except Exception as e:
         logger.error(f"cb_reply_ticket: {e}")
         await callback.answer("Ошибка. Попробуйте позже.", show_alert=True)
-
 
 @dp.message(AdminStates.waiting_for_reply_text)
 async def admin_reply_received(message: Message, state: FSMContext) -> None:
@@ -544,7 +512,6 @@ async def admin_reply_received(message: Message, state: FSMContext) -> None:
             parse_mode="HTML"
         )
 
-
 @dp.callback_query(F.data.startswith("reject_"))
 async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.username):
@@ -586,7 +553,6 @@ async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     )
     await callback.answer("Отклонено.")
 
-
 @dp.callback_query(F.data.startswith("ban_"))
 async def cb_ban_user(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.username):
@@ -612,4 +578,9 @@ async def cb_ban_user(callback: CallbackQuery) -> None:
 
     ban_msg = "🚫 <b>Вы были заблокированы администратором и больше не можете использовать бота.</b>"
     try:
-        await bot.send_message(user_id, ban_msg, parse_mode="HTML"
+        await bot.send_message(user_id, ban_msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"cb_ban_user send notify to {user_id}: {e}")
+
+    try:
+  
