@@ -62,6 +62,12 @@ def init_db() -> None:
                     value TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS blacklist (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT
+                )
+            """)
             conn.commit()
         logger.info("База данных инициализирована успешно.")
     except Exception as e:
@@ -150,6 +156,50 @@ def db_update_ticket_status(ticket_id: int, status: str) -> None:
         logger.error(f"db_update_ticket_status({ticket_id}, {status}): {e}")
 
 
+# Функции для Чёрного Списка
+def db_add_to_blacklist(user_id: int, username: str | None) -> None:
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO blacklist (user_id, username) VALUES (?, ?)",
+                (user_id, username or "unknown")
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"db_add_to_blacklist({user_id}): {e}")
+
+
+def db_remove_from_blacklist(user_id: int) -> None:
+    try:
+        with get_connection() as conn:
+            conn.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"db_remove_from_blacklist({user_id}): {e}")
+
+
+def db_is_blacklisted(user_id: int) -> bool:
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM blacklist WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return row is not None
+    except Exception as e:
+        logger.error(f"db_is_blacklisted({user_id}): {e}")
+        return False
+
+
+def db_get_blacklist() -> list:
+    try:
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM blacklist ORDER BY user_id DESC").fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"db_get_blacklist: {e}")
+        return []
+
+
 # ──────────────────────────────────────────────
 #  FSM — СОСТОЯНИЯ
 # ──────────────────────────────────────────────
@@ -165,41 +215,42 @@ class AdminStates(StatesGroup):
 #  КЛАВИАТУРЫ
 # ──────────────────────────────────────────────
 
-# 1. ТА САМАЯ КНОПКА СНИЗУ (ПОД ИКОНКОЙ С КРУЖОЧКАМИ)
 def bottom_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📱 Меню")]
         ],
-        resize_keyboard=True # Делает кнопку компактной и красивой
+        resize_keyboard=True
     )
 
 
-# 2. Инлайн-кнопки под сообщениями
 def main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="🤝 Написать гаранту", callback_data="write_garant")],
         [InlineKeyboardButton(text="🛍️ Магазин", url=SHOP_URL)],
     ]
     if is_admin:
-        buttons.append(
-            [InlineKeyboardButton(text="📥 Запросы", callback_data="admin_tickets")]
-        )
+        # Для админа добавляем в ряд кнопки Запросы и ЧС
+        buttons.append([
+            InlineKeyboardButton(text="📥 Запросы", callback_data="admin_tickets"),
+            InlineKeyboardButton(text="🚫 ЧС (Список)", callback_data="admin_blacklist")
+        ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def ticket_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(
-                text="✍️ Ответить",
-                callback_data=f"reply_{ticket_id}",
-            ),
-            InlineKeyboardButton(
-                text="❌ Отклонить",
-                callback_data=f"reject_{ticket_id}",
-            ),
+            InlineKeyboardButton(text="✍️ Ответить", callback_data=f"reply_{ticket_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{ticket_id}"),
+            InlineKeyboardButton(text="🚫 ЧС", callback_data=f"ban_{ticket_id}")
         ]
+    ])
+
+
+def unban_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 Разбанить", callback_data=f"unban_{user_id}")]
     ])
 
 
@@ -236,12 +287,15 @@ dp  = Dispatcher(storage=MemoryStorage())
 #  ОБРАБОТЧИКИ
 # ──────────────────────────────────────────────
 
-# Хелпер для генерации и отправки стартового меню
 async def send_start_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = message.from_user
     username = user.username if user else None
     user_id  = user.id if user else None
+
+    if user_id and db_is_blacklisted(user_id):
+        await message.answer("🚫 <b>Вы заблокированы в этом боте.</b>", parse_mode="HTML")
+        return
 
     try:
         await save_admin_id_if_needed(user_id, username)
@@ -260,34 +314,34 @@ async def send_start_menu(message: Message, state: FSMContext) -> None:
         greeting += "\n\n<i>🔐 Вы вошли как администратор.</i>"
 
     try:
-        # Отправляем инлайн-кнопки меню, а также прикрепляем ту самую нижнюю кнопку «📱 Меню»
         await message.answer(
             greeting, 
             reply_markup=main_keyboard(is_admin=admin), 
             parse_mode="HTML"
         )
-        # Отправляем нижнюю кнопку отдельным пустым (или скрытым) действием, чтобы она всегда была на экране
         await message.answer("Воспользуйтесь кнопкой «📱 Меню» ниже для быстрой навигации.", reply_markup=bottom_menu_keyboard())
     except Exception as e:
         logger.error(f"send_start_menu answer: {e}")
 
 
-# Обработка команды /start
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await send_start_menu(message, state)
 
 
-# ОБРАБОТЧИК ДЛЯ НАЖАТИЯ НА КНОПКУ «📱 Меню»
 @dp.message(F.text == "📱 Меню")
 async def btn_menu_pressed(message: Message, state: FSMContext) -> None:
     await send_start_menu(message, state)
 
 
-# Кнопка «Написать гаранту»
 @dp.callback_query(F.data == "write_garant")
 async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
     user = callback.from_user
+    
+    if db_is_blacklisted(user.id):
+        await callback.answer("🚫 Вы заблокированы в боте.", show_alert=True)
+        return
+
     if is_admin(user.username):
         await callback.answer("Вы администратор.", show_alert=False)
         return
@@ -305,18 +359,22 @@ async def cb_write_garant(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("Ошибка. Попробуйте позже.", show_alert=True)
 
 
-# Получение сообщения от пользователя
 @dp.message(UserStates.waiting_for_message)
 async def user_message_received(message: Message, state: FSMContext) -> None:
-    # Игнорируем нажатие кнопки меню во время ввода сообщения, чтобы не ломать логику
+    user     = message.from_user
+    user_id  = user.id
+
+    if db_is_blacklisted(user_id):
+        await state.clear()
+        await message.answer("🚫 <b>Вы заблокированы в этом боте.</b>", parse_mode="HTML")
+        return
+
     if message.text == "📱 Меню":
         await state.clear()
         await send_start_menu(message, state)
         return
 
     await state.clear()
-    user     = message.from_user
-    user_id  = user.id
     username = user.username or "нет username"
     text     = message.text or ""
 
@@ -355,7 +413,6 @@ async def user_message_received(message: Message, state: FSMContext) -> None:
             logger.error(f"user_message_received notify admin: {e}")
 
 
-# Кнопка «📥 Запросы» — показ тикетов
 @dp.callback_query(F.data == "admin_tickets")
 async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.username):
@@ -396,7 +453,6 @@ async def cb_admin_tickets(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-# Кнопка «✍️ Ответить»
 @dp.callback_query(F.data.startswith("reply_"))
 async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.username):
@@ -429,10 +485,8 @@ async def cb_reply_ticket(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("Ошибка. Попробуйте позже.", show_alert=True)
 
 
-# Получение ответа от админа
 @dp.message(AdminStates.waiting_for_reply_text)
 async def admin_reply_received(message: Message, state: FSMContext) -> None:
-    # Игнорируем нажатие кнопки меню во время ответа
     if message.text == "📱 Меню":
         await state.clear()
         await send_start_menu(message, state)
@@ -491,7 +545,6 @@ async def admin_reply_received(message: Message, state: FSMContext) -> None:
         )
 
 
-# Кнопка «❌ Отклонить»
 @dp.callback_query(F.data.startswith("reject_"))
 async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.username):
@@ -534,18 +587,29 @@ async def cb_reject_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("Отклонено.")
 
 
-# ──────────────────────────────────────────────
-#  ТОЧКА ВХОДА
-# ──────────────────────────────────────────────
-async def main() -> None:
-    init_db()
-    logger.info("Бот запускается...")
+@dp.callback_query(F.data.startswith("ban_"))
+async def cb_ban_user(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.username):
+        await callback.answer("⛔ Нет доступа.", show_alert=True)
+        return
+
+    ticket_id = int(callback.data.split("_")[1])
+    ticket    = db_get_ticket(ticket_id)
+
+    if not ticket:
+        await callback.answer("❌ Тикет не найден.", show_alert=True)
+        return
+
+    if ticket["status"] != "open":
+        await callback.answer("⚠️ Тикет уже закрыт.", show_alert=True)
+        return
+
+    user_id = ticket["user_id"]
+    username = ticket["username"]
+
+    db_add_to_blacklist(user_id, username)
+    db_update_ticket_status(ticket_id, "blocked")
+
+    ban_msg = "🚫 <b>Вы были заблокированы администратором и больше не можете использовать бота.</b>"
     try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        await bot.session.close()
-        logger.info("Бот остановлен.")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        await bot.send_message(user_id, ban_msg, parse_mode="HTML"
